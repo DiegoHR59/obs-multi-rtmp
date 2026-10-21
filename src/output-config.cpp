@@ -28,6 +28,13 @@ static nlohmann::json SaveTarget(OutputTargetConfig& config) {
     json["sync-start"] = config.syncStart;
     json["sync-stop"] = config.syncStop;
     json["enabled"] = config.enabled;
+    json["confirm-start"] = config.confirmStart;
+    json["schedule-enabled"] = config.scheduleEnabled;
+    json["schedule-start"] = config.scheduleStartMin;
+    json["schedule-end"] = config.scheduleEndMin;
+    json["schedule-days"] = config.scheduleDays;
+    json["max-duration-min"] = config.maxDurationMin;
+    json["warn-before-min"] = config.warnBeforeMin;
     if (config.videoConfig.has_value())
         json["video-config"] = *config.videoConfig;
     if (config.audioConfig.has_value())
@@ -129,6 +136,14 @@ static OutputTargetConfigPtr LoadTargetConfig(nlohmann::json& json) {
     config->syncStart = GetJsonField<bool>(json, "sync-start").value_or(false);
     config->syncStop = GetJsonField<bool>(json, "sync-stop").value_or(config->syncStart);
     config->enabled = GetJsonField<bool>(json, "enabled").value_or(true);
+    config->confirmStart = GetJsonField<bool>(json, "confirm-start").value_or(false);
+    config->scheduleEnabled = GetJsonField<bool>(json, "schedule-enabled").value_or(false);
+    // Clamp values from a hand-edited or imported file to sane ranges.
+    config->scheduleStartMin = std::clamp(GetJsonField<int>(json, "schedule-start").value_or(19 * 60), 0, 24 * 60 - 1);
+    config->scheduleEndMin = std::clamp(GetJsonField<int>(json, "schedule-end").value_or(23 * 60), 0, 24 * 60 - 1);
+    config->scheduleDays = GetJsonField<int>(json, "schedule-days").value_or(0x7F) & 0x7F;
+    config->maxDurationMin = std::clamp(GetJsonField<int>(json, "max-duration-min").value_or(0), 0, 7 * 24 * 60);
+    config->warnBeforeMin = std::clamp(GetJsonField<int>(json, "warn-before-min").value_or(5), 0, 24 * 60);
     config->serviceParam = GetJsonField<nlohmann::json>(json, "service-param").value_or(nlohmann::json{});
     config->outputParam = GetJsonField<nlohmann::json>(json, "output-param").value_or(nlohmann::json{});
     config->videoConfig = GetJsonField<std::string>(json, "video-config");

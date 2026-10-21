@@ -25,6 +25,14 @@
 #include <QCheckBox>
 #include <QGroupBox>
 #include <QAction>
+#include <QApplication>
+#include <QPointer>
+#include <QDateTime>
+#include <QTime>
+#include <QTimeEdit>
+#include <QSpinBox>
+#include <QLocale>
+#include <QCoreApplication>
 
 #include "obs-multi-rtmp.h"
 #include "obs-module.h"

@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "helpers.h"
 #include <regex>
+#include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <optional>
 #include <tuple>
@@ -8,6 +10,7 @@
 #include "edit-widget.h"
 #include "output-config.h"
 #include "protocols.h"
+#include "safety-guard.h"
 
 #include "obs.hpp"
 
@@ -112,6 +115,14 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
     uint64_t total_frames_ = 0;
     uint64_t total_bytes_ = 0;
     QTimer* timer_ = 0;
+
+    // Safety guards: automatic stop and its advance warning.
+    static constexpr int kExtendMinutes = 30;
+    QTimer* limit_timer_ = 0;
+    std::optional<clock::time_point> deadline_;
+    bool warned_ = false;
+    bool autoStopped_ = false;
+    QPointer<QMessageBox> warnBox_;
 
     QPushButton* edit_btn_ = 0;
     QPushButton* remove_btn_ = 0;
@@ -548,7 +559,19 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
                 }
             }();
             
-            msg_->setText((std::string(strDuration) + "  " + strBps + "  " + strFps).c_str());
+            std::string line = std::string(strDuration) + "  " + strBps + "  " + strFps;
+
+            // Show how long until the automatic stop, if one is armed.
+            if (deadline_) {
+                auto left = duration_cast<seconds>(*deadline_ - now).count();
+                if (left < 0) left = 0;
+                char strLeft[64] = { 0 };
+                snprintf(strLeft, sizeof(strLeft), "  [-%02d:%02d:%02d]",
+                    (int)(left / 3600), (int)((left % 3600) / 60), (int)(left % 60));
+                line += strLeft;
+            }
+
+            msg_->setText(QString::fromUtf8(line.c_str()));
         }
 
         total_frames_ = new_frames;
@@ -571,6 +594,150 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
         status_dot_->setStyleSheet(QString("color: %1;").arg(color));
     }
 
+    // ---- Safety guards -------------------------------------------------
+
+    ScheduleSpec GetSchedule() const
+    {
+        ScheduleSpec s;
+        s.enabled = config_->scheduleEnabled;
+        s.startMin = config_->scheduleStartMin;
+        s.endMin = config_->scheduleEndMin;
+        s.days = config_->scheduleDays;
+        return s;
+    }
+
+    static LocalMoment NowLocal()
+    {
+        const auto dt = QDateTime::currentDateTime();
+        LocalMoment m;
+        m.dow = dt.date().dayOfWeek() - 1; // Qt: 1 = Monday ... 7 = Sunday
+        m.secondOfDay = QTime(0, 0).secsTo(dt.time());
+        return m;
+    }
+
+    static QString FormatMinutes(int minutes)
+    {
+        return QString("%1:%2")
+            .arg(minutes / 60, 2, 10, QChar('0'))
+            .arg(minutes % 60, 2, 10, QChar('0'));
+    }
+
+    // Fixed once per run (at start) from the max duration and/or the end of
+    // the allowed window, whichever comes first. Extending moves it later.
+    // It is not recomputed each tick so that an extension can run past the
+    // window end without the limit silently disappearing.
+    std::optional<clock::time_point> ComputeDeadline() const
+    {
+        std::optional<clock::time_point> deadline;
+        if (config_->maxDurationMin > 0)
+            deadline = begin_time_ + std::chrono::minutes(config_->maxDurationMin);
+
+        if (auto secs = SecondsUntilWindowEnd(GetSchedule(), NowLocal())) {
+            auto windowEnd = clock::now() + std::chrono::seconds(*secs);
+            if (!deadline || windowEnd < *deadline)
+                deadline = windowEnd;
+        }
+        return deadline;
+    }
+
+    bool ConfirmStart()
+    {
+        auto text = QString::fromUtf8(obs_module_text("Question.Start"))
+            .arg(QString::fromUtf8(config_->name));
+        auto res = QMessageBox::question(
+            this,
+            QString::fromUtf8(obs_module_text("Question.Title")),
+            text,
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No // default answer: No, so a stray Enter doesn't start it
+        );
+        return res == QMessageBox::Yes;
+    }
+
+    void StopGracefully()
+    {
+        if (output_ && obs_output_active(output_))
+            obs_output_stop(output_);
+    }
+
+    void AutoStop()
+    {
+        autoStopped_ = true;
+        deadline_.reset(); // don't fire again while the output winds down
+        if (warnBox_)
+            warnBox_->close();
+        blog(LOG_INFO, TAG "Auto-stopping target \"%s\" (time limit reached)", config_->name.c_str());
+        StopGracefully();
+    }
+
+    void ShowStopWarning()
+    {
+        if (warnBox_)
+            return;
+
+        using namespace std::chrono;
+        auto remaining = duration_cast<seconds>(*deadline_ - clock::now()).count();
+        auto mins = std::max<long long>(1, (remaining + 59) / 60);
+
+        auto text = QString::fromUtf8(obs_module_text("Warn.AutoStop"))
+            .arg(QString::fromUtf8(config_->name))
+            .arg(mins);
+
+        // Non-modal on purpose: it must not freeze OBS, and if nobody answers
+        // the stop still happens at the deadline.
+        auto box = new QMessageBox(
+            QMessageBox::Warning,
+            QString::fromUtf8(obs_module_text("Notice.Title")),
+            text,
+            QMessageBox::NoButton,
+            this);
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->setWindowModality(Qt::NonModal);
+        auto extendBtn = box->addButton(
+            QString::fromUtf8(obs_module_text("Warn.Extend")).arg(kExtendMinutes),
+            QMessageBox::AcceptRole);
+        auto stopBtn = box->addButton(
+            QString::fromUtf8(obs_module_text("Warn.StopNow")),
+            QMessageBox::DestructiveRole);
+        box->setDefaultButton(extendBtn);
+        warnBox_ = box;
+
+        QObject::connect(box, &QMessageBox::buttonClicked, this,
+            [this, extendBtn, stopBtn](QAbstractButton* clicked) {
+                if (clicked == extendBtn) {
+                    if (deadline_) {
+                        *deadline_ += std::chrono::minutes(kExtendMinutes);
+                        warned_ = false; // warn again before the new deadline
+                    }
+                } else if (clicked == stopBtn) {
+                    deadline_.reset();
+                    StopGracefully();
+                }
+            });
+
+        box->show();
+        box->raise();
+        QApplication::alert(box);
+    }
+
+    void CheckLimits()
+    {
+        if (!deadline_ || !IsRunning())
+            return;
+
+        const auto now = clock::now();
+        if (now >= *deadline_) {
+            AutoStop();
+            return;
+        }
+
+        if (!warned_ && config_->warnBeforeMin > 0
+            && *deadline_ - now <= std::chrono::minutes(config_->warnBeforeMin)) {
+            warned_ = true;
+            ShowStopWarning();
+        }
+    }
+
 public:
     PushWidgetImpl(const std::string& targetid, QWidget* parent = 0)
         : QWidget(parent)
@@ -587,6 +754,14 @@ public:
         timer_->setInterval(std::chrono::milliseconds(1000));
         QObject::connect(timer_, &QTimer::timeout, [this]() {
             UpdateStreamStatus();
+        });
+
+        // Runs for the whole life of a run, including reconnects (unlike
+        // timer_, which pauses while reconnecting).
+        limit_timer_ = new QTimer(this);
+        limit_timer_->setInterval(std::chrono::milliseconds(1000));
+        QObject::connect(limit_timer_, &QTimer::timeout, [this]() {
+            CheckLimits();
         });
 
         auto layout = new QGridLayout(this);
@@ -666,6 +841,13 @@ public:
 
 
     void StartStreaming() override {
+        // Hotkeys fire on OBS's hotkey thread. The checks below show dialogs
+        // and touch widgets, so hop over to the UI thread first.
+        if (QThread::currentThread() != QCoreApplication::instance()->thread()) {
+            GetGlobalService().RunInUIThread([this]() { StartStreaming(); });
+            return;
+        }
+
         bool expected = false;
         if (IsRunning() || !isStarting_.compare_exchange_strong(expected, true))
             return;
@@ -676,6 +858,20 @@ public:
             SetMsg(obs_module_text("Status.Disabled"));
             return;
         }
+
+        // Safety guards. Every way of starting a target ends up here (button,
+        // Start all, hotkeys, sync start), so checking here covers them all.
+        // The schedule is checked before asking for confirmation so the user
+        // isn't asked to approve something that will be refused anyway.
+        if (!IsWithinWindow(GetSchedule(), NowLocal())) {
+            SetMsg(QString::fromUtf8(obs_module_text("Status.OutsideSchedule"))
+                .arg(FormatMinutes(config_->scheduleStartMin))
+                .arg(FormatMinutes(config_->scheduleEndMin)));
+            return;
+        }
+
+        if (config_->confirmStart && !ConfirmStart())
+            return;
 
         // recreate output
         ReleaseOutput();
@@ -864,6 +1060,12 @@ public:
             isConnecting_ = true;
             isReconnecting_ = false;
             lastErrorCode_ = 0;
+
+            autoStopped_ = false;
+            warned_ = false;
+            deadline_ = ComputeDeadline();
+            limit_timer_->start();
+
             remove_btn_->setEnabled(false);
             btn_->setText(obs_module_text("Status.Stop"));
             btn_->setEnabled(true);
@@ -941,6 +1143,11 @@ public:
             ResetInfo();
             timer_->stop();
 
+            limit_timer_->stop();
+            deadline_.reset();
+            if (warnBox_)
+                warnBox_->close();
+
             remove_btn_->setEnabled(true);
             btn_->setText(obs_module_text("Btn.Start"));
             btn_->setEnabled(true);
@@ -949,7 +1156,8 @@ public:
             switch(code)
             {
                 case 0:
-                    SetMsg(u8"");
+                    SetMsg(autoStopped_ ? obs_module_text("Status.AutoStopped") : u8"");
+                    autoStopped_ = false;
                     break;
                 case -1:
                     SetMsg(obs_module_text("Error.WrongRTMPUrl"));

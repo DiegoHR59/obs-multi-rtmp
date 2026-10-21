@@ -47,6 +47,24 @@ struct OutputTargetConfig {
     // that's down) without deleting and re-creating it.
     bool enabled = true;
 
+    // --- Safety guards (all optional, off by default) ---
+    // Ask "are you sure?" before this target starts, from any entry point
+    // (button, Start all, hotkey, sync start).
+    bool confirmStart = false;
+    // Only allow this target to run inside a weekly time window. Times are
+    // minutes since local midnight. A window with start > end crosses
+    // midnight (e.g. 22:00-02:00); start == end means "all day".
+    bool scheduleEnabled = false;
+    int scheduleStartMin = 19 * 60;
+    int scheduleEndMin = 23 * 60;
+    // Bit 0 = Monday ... bit 6 = Sunday. For midnight-crossing windows the
+    // bit refers to the day the window starts on.
+    int scheduleDays = 0x7F;
+    // Auto-stop after this many minutes of streaming (0 = no limit).
+    int maxDurationMin = 0;
+    // Show a warning this many minutes before an automatic stop (0 = none).
+    int warnBeforeMin = 5;
+
     nlohmann::json serviceParam;
     nlohmann::json outputParam;
 

@@ -251,6 +251,24 @@ class EditTargetPanelImpl: public EditTargetPanel
     QCheckBox* syncStart_ = 0;
     QCheckBox* syncStop_ = 0;
 
+    // Safety guards
+    QCheckBox* confirmStart_ = 0;
+    QCheckBox* scheduleEnabled_ = 0;
+    QTimeEdit* scheduleFrom_ = 0;
+    QTimeEdit* scheduleTo_ = 0;
+    QCheckBox* scheduleDay_[7] = {};
+    QSpinBox* maxDuration_ = 0;
+    QSpinBox* warnBefore_ = 0;
+
+    void UpdateSafetyUI()
+    {
+        const bool sched = scheduleEnabled_->isChecked();
+        scheduleFrom_->setEnabled(sched);
+        scheduleTo_->setEnabled(sched);
+        for (auto cb : scheduleDay_)
+            cb->setEnabled(sched);
+    }
+
     std::vector<std::string> EnumEncodersByCodec(const char* codec)
     {
         if (!codec)
@@ -579,6 +597,49 @@ public:
                     auto otherLayout = new QGridLayout();
                     otherLayout->addWidget(syncStart_ = new QCheckBox(obs_module_text("SyncStart"), gp), 0, 0);
                     otherLayout->addWidget(syncStop_ = new QCheckBox(obs_module_text("SyncStop"), gp), 1, 0);
+
+                    // --- Safety guards ---
+                    int row = 2;
+                    otherLayout->addWidget(confirmStart_ = new QCheckBox(obs_module_text("Safety.ConfirmStart"), gp), row++, 0);
+
+                    otherLayout->addWidget(scheduleEnabled_ = new QCheckBox(obs_module_text("Safety.Schedule"), gp), row++, 0);
+
+                    auto timeRow = new QHBoxLayout();
+                    timeRow->addWidget(new QLabel(obs_module_text("Safety.From"), gp));
+                    timeRow->addWidget(scheduleFrom_ = new QTimeEdit(gp));
+                    timeRow->addWidget(new QLabel(obs_module_text("Safety.To"), gp));
+                    timeRow->addWidget(scheduleTo_ = new QTimeEdit(gp));
+                    timeRow->addStretch(1);
+                    scheduleFrom_->setDisplayFormat("HH:mm");
+                    scheduleTo_->setDisplayFormat("HH:mm");
+                    otherLayout->addLayout(timeRow, row++, 0);
+
+                    auto dayRow = new QHBoxLayout();
+                    for (int i = 0; i < 7; ++i) {
+                        // QLocale::dayName: 1 = Monday ... 7 = Sunday
+                        dayRow->addWidget(scheduleDay_[i] = new QCheckBox(QLocale().dayName(i + 1, QLocale::ShortFormat), gp));
+                    }
+                    otherLayout->addLayout(dayRow, row++, 0);
+
+                    auto maxRow = new QHBoxLayout();
+                    maxRow->addWidget(new QLabel(obs_module_text("Safety.MaxDuration"), gp));
+                    maxRow->addWidget(maxDuration_ = new QSpinBox(gp));
+                    maxDuration_->setRange(0, 7 * 24 * 60);
+                    maxDuration_->setSpecialValueText(obs_module_text("Safety.Off"));
+                    maxDuration_->setSuffix(" min");
+                    maxRow->addStretch(1);
+                    otherLayout->addLayout(maxRow, row++, 0);
+
+                    auto warnRow = new QHBoxLayout();
+                    warnRow->addWidget(new QLabel(obs_module_text("Safety.WarnBefore"), gp));
+                    warnRow->addWidget(warnBefore_ = new QSpinBox(gp));
+                    warnBefore_->setRange(0, 24 * 60);
+                    warnBefore_->setSpecialValueText(obs_module_text("Safety.Off"));
+                    warnBefore_->setSuffix(" min");
+                    warnRow->addStretch(1);
+                    otherLayout->addLayout(warnRow, row++, 0);
+
+                    QObject::connect(scheduleEnabled_, &QCheckBox::toggled, [this]() { UpdateSafetyUI(); });
                     gp->setLayout(otherLayout);
                 }
             }
@@ -874,6 +935,16 @@ public:
         config_->protocol = tostdu8(protocolSelector_->itemData(protocolSelector_->currentIndex()).toString());
         config_->syncStart = syncStart_->isChecked();
         config_->syncStop = syncStop_->isChecked();
+        config_->confirmStart = confirmStart_->isChecked();
+        config_->scheduleEnabled = scheduleEnabled_->isChecked();
+        config_->scheduleStartMin = QTime(0, 0).secsTo(scheduleFrom_->time()) / 60;
+        config_->scheduleEndMin = QTime(0, 0).secsTo(scheduleTo_->time()) / 60;
+        config_->scheduleDays = 0;
+        for (int i = 0; i < 7; ++i)
+            if (scheduleDay_[i]->isChecked())
+                config_->scheduleDays |= (1 << i);
+        config_->maxDurationMin = maxDuration_->value();
+        config_->warnBeforeMin = warnBefore_->value();
         config_->outputParam = outputSettings_->Save();
         config_->serviceParam = serviceSettings_->Save();
 
@@ -915,6 +986,15 @@ public:
         protocolSelector_->setCurrentIndex(protocolIndex);
         syncStart_->setChecked(target.syncStart);
         syncStop_->setChecked(target.syncStop);
+        confirmStart_->setChecked(target.confirmStart);
+        scheduleEnabled_->setChecked(target.scheduleEnabled);
+        scheduleFrom_->setTime(QTime(target.scheduleStartMin / 60, target.scheduleStartMin % 60));
+        scheduleTo_->setTime(QTime(target.scheduleEndMin / 60, target.scheduleEndMin % 60));
+        for (int i = 0; i < 7; ++i)
+            scheduleDay_[i]->setChecked((target.scheduleDays >> i) & 1);
+        maxDuration_->setValue(target.maxDurationMin);
+        warnBefore_->setValue(target.warnBeforeMin);
+        UpdateSafetyUI();
     }
 
     using IdOrVideoConfig = std::variant<std::string_view, VideoEncoderConfig*>;
