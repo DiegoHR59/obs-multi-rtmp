@@ -633,7 +633,9 @@ public:
                     auto warnRow = new QHBoxLayout();
                     warnRow->addWidget(new QLabel(obs_module_text("Safety.WarnBefore"), gp));
                     warnRow->addWidget(warnBefore_ = new QSpinBox(gp));
-                    warnBefore_->setRange(0, 24 * 60);
+                    // Kept below the 30 min extension, or the warning would pop up again
+                    // right after every "extend".
+                    warnBefore_->setRange(0, 25);
                     warnBefore_->setSpecialValueText(obs_module_text("Safety.Off"));
                     warnBefore_->setSuffix(" min");
                     warnRow->addStretch(1);

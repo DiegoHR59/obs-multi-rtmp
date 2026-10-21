@@ -63,6 +63,7 @@ struct OutputTargetConfig {
     // Auto-stop after this many minutes of streaming (0 = no limit).
     int maxDurationMin = 0;
     // Show a warning this many minutes before an automatic stop (0 = none).
+    // Capped at 25, below the 30 min "extend" step.
     int warnBeforeMin = 5;
 
     nlohmann::json serviceParam;

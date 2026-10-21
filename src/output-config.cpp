@@ -143,7 +143,7 @@ static OutputTargetConfigPtr LoadTargetConfig(nlohmann::json& json) {
     config->scheduleEndMin = std::clamp(GetJsonField<int>(json, "schedule-end").value_or(23 * 60), 0, 24 * 60 - 1);
     config->scheduleDays = GetJsonField<int>(json, "schedule-days").value_or(0x7F) & 0x7F;
     config->maxDurationMin = std::clamp(GetJsonField<int>(json, "max-duration-min").value_or(0), 0, 7 * 24 * 60);
-    config->warnBeforeMin = std::clamp(GetJsonField<int>(json, "warn-before-min").value_or(5), 0, 24 * 60);
+    config->warnBeforeMin = std::clamp(GetJsonField<int>(json, "warn-before-min").value_or(5), 0, 25);
     config->serviceParam = GetJsonField<nlohmann::json>(json, "service-param").value_or(nlohmann::json{});
     config->outputParam = GetJsonField<nlohmann::json>(json, "output-param").value_or(nlohmann::json{});
     config->videoConfig = GetJsonField<std::string>(json, "video-config");

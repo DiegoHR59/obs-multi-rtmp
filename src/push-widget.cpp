@@ -632,11 +632,21 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
         if (config_->maxDurationMin > 0)
             deadline = begin_time_ + std::chrono::minutes(config_->maxDurationMin);
 
-        if (auto secs = SecondsUntilWindowEnd(GetSchedule(), NowLocal())) {
-            auto windowEnd = clock::now() + std::chrono::seconds(*secs);
-            if (!deadline || windowEnd < *deadline)
-                deadline = windowEnd;
+        std::optional<clock::time_point> windowEnd;
+        const auto schedule = GetSchedule();
+        const auto now = NowLocal();
+        if (auto secs = SecondsUntilWindowEnd(schedule, now)) {
+            windowEnd = clock::now() + std::chrono::seconds(*secs);
+        } else if (!IsWithinWindow(schedule, now)) {
+            // Already outside the allowed hours (the window closed while the
+            // output was connecting, or the schedule was edited mid-stream).
+            // Without this the run would have no limit at all. Give the
+            // usual warning period instead of cutting instantly.
+            windowEnd = clock::now() + std::chrono::minutes(config_->warnBeforeMin);
         }
+
+        if (windowEnd && (!deadline || *windowEnd < *deadline))
+            deadline = windowEnd;
         return deadline;
     }
 
@@ -843,8 +853,10 @@ public:
     void StartStreaming() override {
         // Hotkeys fire on OBS's hotkey thread. The checks below show dialogs
         // and touch widgets, so hop over to the UI thread first.
+        // Using `this` as the context object makes Qt drop the call if the
+        // widget is deleted before it runs.
         if (QThread::currentThread() != QCoreApplication::instance()->thread()) {
-            GetGlobalService().RunInUIThread([this]() { StartStreaming(); });
+            QMetaObject::invokeMethod(this, [this]() { StartStreaming(); }, Qt::QueuedConnection);
             return;
         }
 
@@ -870,8 +882,17 @@ public:
             return;
         }
 
-        if (config_->confirmStart && !ConfirmStart())
-            return;
+        if (config_->confirmStart) {
+            if (!ConfirmStart())
+                return;
+            // The dialog may have been left open past the end of the window.
+            if (!IsWithinWindow(GetSchedule(), NowLocal())) {
+                SetMsg(QString::fromUtf8(obs_module_text("Status.OutsideSchedule"))
+                    .arg(FormatMinutes(config_->scheduleStartMin))
+                    .arg(FormatMinutes(config_->scheduleEndMin)));
+                return;
+            }
+        }
 
         // recreate output
         ReleaseOutput();
@@ -941,6 +962,13 @@ public:
     }
 
     void StopStreaming() override {
+        // Same as StartStreaming: the stop hotkey runs on the hotkey thread,
+        // and the "discard delay?" question below is a dialog.
+        if (QThread::currentThread() != QCoreApplication::instance()->thread()) {
+            QMetaObject::invokeMethod(this, [this]() { StopStreaming(); }, Qt::QueuedConnection);
+            return;
+        }
+
         if (!IsRunning())
             return;
         
@@ -1040,6 +1068,12 @@ public:
         {
             SaveMultiOutputConfig();
             LoadConfig();
+            // Limits edited while live take effect right away instead of
+            // on the next start.
+            if (IsRunning()) {
+                deadline_ = ComputeDeadline();
+                warned_ = false;
+            }
             return true;
         }
         else
