@@ -143,6 +143,11 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
 
     bool isConnecting_ = false;
     bool isReconnecting_ = false;
+    // Our own view of the output state, driven by the output's signals.
+    // obs_output_active() can still report true while the "stop" signal is
+    // being handled, which left the indicator green after stopping.
+    bool isLive_ = false;
+    bool isStopping_ = false;
     int lastErrorCode_ = 0;
 
     // Registered under the stable target id (not the display name) so key
@@ -519,7 +524,9 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
     void UpdateStreamStatus() {
         using namespace std::chrono;
 
-        if (!output_)
+        // A tick queued just before the output stopped must not repaint the
+        // stats or the health indicator as if it were still live.
+        if (!output_ || !isLive_)
             return;
 
         static const char* units[] = {
@@ -582,7 +589,8 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
                 const float rawCongestion = obs_output_get_congestion(output_);
                 const float congestion = SmoothCongestion(rawCongestion, last_congestion_);
                 last_congestion_ = rawCongestion;
-                health_level_ = ClassifyHealth(congestion, dFrames, dDropped);
+                if (isLive_)
+                    health_level_ = ClassifyHealth(congestion, dFrames, dDropped);
 
                 // Cumulative dropped frames, as in OBS's status bar.
                 if (frames + dropped > 0) {
@@ -624,13 +632,16 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
 
         const char* color = "#888888"; // stopped / idle
         QString label;
-        if (isReconnecting_) {
+        if (isStopping_) {
+            color = "#888888";
+            label = QString::fromUtf8(obs_module_text("Status.Stopping"));
+        } else if (isReconnecting_) {
             color = "#e67e22"; // orange: link lost, retrying
             label = QString::fromUtf8(obs_module_text("Status.Reconnecting"));
         } else if (isConnecting_) {
             color = "#e6b800";
             label = QString::fromUtf8(obs_module_text("Status.Connecting"));
-        } else if (IsRunning()) {
+        } else if (isLive_) {
             if (health_level_) {
                 color = HealthColor(*health_level_);
                 label = QString::fromUtf8(obs_module_text(HealthTextKey(*health_level_)));
@@ -644,7 +655,7 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
         }
 
         status_dot_->setStyleSheet(QString("color: %1;").arg(color));
-        if (!IsRunning())
+        if (!isLive_)
             status_dot_->setToolTip(QString());
         if (health_) {
             health_->setText(label);
@@ -1158,6 +1169,8 @@ public:
             begin_time_ = clock::now();
             isConnecting_ = true;
             isReconnecting_ = false;
+            isLive_ = false;
+            isStopping_ = false;
             lastErrorCode_ = 0;
 
             autoStopped_ = false;
@@ -1180,6 +1193,7 @@ public:
             isStarting_ = false;
             isConnecting_ = false;
             isReconnecting_ = false;
+            isLive_ = true;
             remove_btn_->setEnabled(false);
             btn_->setText(obs_module_text("Status.Stop"));
             btn_->setEnabled(true);
@@ -1209,6 +1223,7 @@ public:
     {
         GetGlobalService().RunInUIThread([this]() {
             isReconnecting_ = false;
+            isLive_ = true;
             remove_btn_->setEnabled(false);
             btn_->setText(obs_module_text("Status.Stop"));
             btn_->setEnabled(true);
@@ -1225,10 +1240,15 @@ public:
         GetGlobalService().RunInUIThread([this]() {
             timer_->stop();
 
+            isLive_ = false;
+            isStopping_ = true;
+            health_level_.reset();
+
             remove_btn_->setEnabled(false);
             btn_->setText(obs_module_text("Status.Stop"));
             btn_->setEnabled(true);
             SetMsg(obs_module_text("Status.Stopping"));
+            UpdateStatusDot();
         });
     }
 
@@ -1238,6 +1258,8 @@ public:
             isStarting_ = false;
             isConnecting_ = false;
             isReconnecting_ = false;
+            isLive_ = false;
+            isStopping_ = false;
             lastErrorCode_ = code;
             ResetInfo();
             timer_->stop();
