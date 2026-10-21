@@ -11,6 +11,7 @@
 #include "output-config.h"
 #include "protocols.h"
 #include "safety-guard.h"
+#include "stream-health.h"
 
 #include "obs.hpp"
 
@@ -107,6 +108,12 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
     QLabel* name_ = 0;
     QLabel* msg_ = 0;
     QLabel* status_dot_ = 0;
+    // Connection health while live (OBS-style coloured square + label).
+    QLabel* health_ = 0;
+    std::optional<HealthLevel> health_level_;
+    float last_congestion_ = 0.0f;
+    int64_t health_prev_frames_ = 0;
+    int64_t health_prev_dropped_ = 0;
     QCheckBox* enabled_cb_ = 0;
 
     using clock = std::chrono::steady_clock;
@@ -561,6 +568,38 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
             
             std::string line = std::string(strDuration) + "  " + strBps + "  " + strFps;
 
+            // Health: congestion (smoothed like OBS) plus frames dropped in
+            // this interval. Counters can restart after a reconnect, so
+            // negative deltas are treated as zero.
+            {
+                const int64_t frames = obs_output_get_total_frames(output_);
+                const int64_t dropped = obs_output_get_frames_dropped(output_);
+                const int64_t dFrames = std::max<int64_t>(0, frames - health_prev_frames_);
+                const int64_t dDropped = std::max<int64_t>(0, dropped - health_prev_dropped_);
+                health_prev_frames_ = frames;
+                health_prev_dropped_ = dropped;
+
+                const float rawCongestion = obs_output_get_congestion(output_);
+                const float congestion = SmoothCongestion(rawCongestion, last_congestion_);
+                last_congestion_ = rawCongestion;
+                health_level_ = ClassifyHealth(congestion, dFrames, dDropped);
+
+                // Cumulative dropped frames, as in OBS's status bar.
+                if (frames + dropped > 0) {
+                    const double pct = 100.0 * (double)dropped / (double)(frames + dropped);
+                    auto droppedText = QString::fromUtf8(obs_module_text("Health.Dropped"))
+                        .arg((qlonglong)dropped)
+                        .arg(QString::number(pct, 'f', 1));
+                    line += "  ";
+                    line += droppedText.toUtf8().constData();
+                }
+
+                if (status_dot_)
+                    status_dot_->setToolTip(QString::fromUtf8(obs_module_text("Health.Congestion"))
+                        .arg(QString::number(congestion * 100.0, 'f', 0)));
+                UpdateStatusDot();
+            }
+
             // Show how long until the automatic stop, if one is armed.
             if (deadline_) {
                 auto left = duration_cast<seconds>(*deadline_ - now).count();
@@ -584,14 +623,33 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
             return;
 
         const char* color = "#888888"; // stopped / idle
-        if (isReconnecting_ || isConnecting_)
-            color = "#e6b800"; // connecting / reconnecting
-        else if (IsRunning())
-            color = "#2ecc71"; // live
-        else if (lastErrorCode_ != 0)
+        QString label;
+        if (isReconnecting_) {
+            color = "#e67e22"; // orange: link lost, retrying
+            label = QString::fromUtf8(obs_module_text("Status.Reconnecting"));
+        } else if (isConnecting_) {
+            color = "#e6b800";
+            label = QString::fromUtf8(obs_module_text("Status.Connecting"));
+        } else if (IsRunning()) {
+            if (health_level_) {
+                color = HealthColor(*health_level_);
+                label = QString::fromUtf8(obs_module_text(HealthTextKey(*health_level_)));
+            } else {
+                color = "#2ecc71"; // live, no sample yet
+                label = QString::fromUtf8(obs_module_text("Status.Streaming"));
+            }
+        } else if (lastErrorCode_ != 0) {
             color = "#e74c3c"; // last attempt failed
+            label = QString::fromUtf8(obs_module_text("Health.Failed"));
+        }
 
         status_dot_->setStyleSheet(QString("color: %1;").arg(color));
+        if (!IsRunning())
+            status_dot_->setToolTip(QString());
+        if (health_) {
+            health_->setText(label);
+            health_->setStyleSheet(QString("color: %1; font-weight: bold;").arg(color));
+        }
     }
 
     // ---- Safety guards -------------------------------------------------
@@ -775,8 +833,10 @@ public:
         });
 
         auto layout = new QGridLayout(this);
-        layout->addWidget(status_dot_ = new QLabel(u8"●", this), 0, 0);
-        layout->addWidget(name_ = new QLabel(obs_module_text("NewStreaming"), this), 0, 1, 1, 3);
+        layout->addWidget(status_dot_ = new QLabel(u8"■", this), 0, 0);
+        layout->addWidget(name_ = new QLabel(obs_module_text("NewStreaming"), this), 0, 1, 1, 2);
+        layout->addWidget(health_ = new QLabel(this), 0, 3);
+        health_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
         layout->addWidget(enabled_cb_ = new QCheckBox(this), 1, 0);
         enabled_cb_->setToolTip(obs_module_text("Target.Enabled"));
@@ -1021,6 +1081,11 @@ public:
         total_bytes_ = 0;
         last_info_time_ = clock::now();
         msg_->setText("");
+
+        health_level_.reset();
+        last_congestion_ = 0.0f;
+        health_prev_frames_ = output_ ? obs_output_get_total_frames(output_) : 0;
+        health_prev_dropped_ = output_ ? obs_output_get_frames_dropped(output_) : 0;
     }
 
     bool IsRunning() override
