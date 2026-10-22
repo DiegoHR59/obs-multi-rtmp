@@ -480,13 +480,18 @@ public:
         }
         ++currow;
         {
+            // Left column: video above audio (set once, rarely touched).
+            // Right column: "Other settings" gets the whole half, since
+            // that's where the day-to-day options live.
             auto sub_grid = new QGridLayout();
             sub_grid->setColumnStretch(0, 1);
-            sub_grid->setColumnStretch(1, 0);
+            sub_grid->setColumnStretch(1, 1);
+            sub_grid->setHorizontalSpacing(12);
+            sub_grid->setVerticalSpacing(12);
             {
                 {
                     auto gp = new QGroupBox(obs_module_text("VideoSettings"), this);
-                    sub_grid->addWidget(gp, 0, 0, 2, 1);
+                    sub_grid->addWidget(gp, 0, 0, 1, 1, Qt::AlignTop);
                     auto encLayout = new QGridLayout();
                     int currow = 0;
                     {
@@ -538,7 +543,7 @@ public:
 
                 {
                     auto gp = new QGroupBox(obs_module_text("AudioSettings"), this);
-                    sub_grid->addWidget(gp, 0, 1, 1, 1);
+                    sub_grid->addWidget(gp, 1, 0, 1, 1, Qt::AlignTop);
                     auto encLayout = new QGridLayout();
                     int currow = 0;
                     {
@@ -593,56 +598,120 @@ public:
 
                 {
                     auto gp = new QGroupBox(obs_module_text("OtherSettings"), this);
-                    sub_grid->addWidget(gp, 1, 1, 1, 1);
-                    auto otherLayout = new QGridLayout();
-                    otherLayout->addWidget(syncStart_ = new QCheckBox(obs_module_text("SyncStart"), gp), 0, 0);
-                    otherLayout->addWidget(syncStop_ = new QCheckBox(obs_module_text("SyncStop"), gp), 1, 0);
+                    sub_grid->addWidget(gp, 0, 1, 2, 1, Qt::AlignTop);
+                    gp->setMinimumWidth(400);
 
-                    // --- Safety guards ---
-                    int row = 2;
-                    otherLayout->addWidget(confirmStart_ = new QCheckBox(obs_module_text("Safety.ConfirmStart"), gp), row++, 0);
+                    auto other = new QVBoxLayout();
+                    other->setSpacing(6);
 
-                    otherLayout->addWidget(scheduleEnabled_ = new QCheckBox(obs_module_text("Safety.Schedule"), gp), row++, 0);
+                    // Bold section title, with a thin line above it except for the first.
+                    auto addSection = [&](const char* key, bool first) {
+                        if (!first) {
+                            other->addSpacing(6);
+                            auto line = new QFrame(gp);
+                            line->setFrameShape(QFrame::HLine);
+                            line->setFrameShadow(QFrame::Sunken);
+                            other->addWidget(line);
+                        }
+                        auto title = new QLabel(QString::fromUtf8(obs_module_text(key)), gp);
+                        auto f = title->font();
+                        f.setBold(true);
+                        f.setPointSizeF(f.pointSizeF() * 1.08);
+                        title->setFont(f);
+                        other->addWidget(title);
+                    };
+                    // Short grey explanation under an option.
+                    auto addHelp = [&](const char* key) {
+                        auto help = new QLabel(QString::fromUtf8(obs_module_text(key)), gp);
+                        help->setWordWrap(true);
+                        help->setMinimumWidth(360);
+                        auto f = help->font();
+                        f.setPointSizeF(f.pointSizeF() * 0.92);
+                        help->setFont(f);
+                        help->setStyleSheet("color: #a8a8a8;");
+                        help->setContentsMargins(22, 0, 0, 4);
+                        other->addWidget(help);
+                    };
+                    auto indented = [&](QLayout* row) {
+                        auto wrap = new QHBoxLayout();
+                        wrap->addSpacing(22);
+                        wrap->addLayout(row);
+                        other->addLayout(wrap);
+                    };
+
+                    // --- Sync with OBS ---
+                    addSection("Section.Sync", true);
+                    other->addWidget(syncStart_ = new QCheckBox(obs_module_text("SyncStart"), gp));
+                    other->addWidget(syncStop_ = new QCheckBox(obs_module_text("SyncStop"), gp));
+                    addHelp("Help.Sync");
+
+                    // --- Accidental start protection ---
+                    addSection("Section.Protect", false);
+                    other->addWidget(confirmStart_ = new QCheckBox(obs_module_text("Safety.ConfirmStart"), gp));
+                    addHelp("Help.ConfirmStart");
+
+                    // --- Allowed hours ---
+                    addSection("Section.Schedule", false);
+                    other->addWidget(scheduleEnabled_ = new QCheckBox(obs_module_text("Safety.Schedule"), gp));
 
                     auto timeRow = new QHBoxLayout();
                     timeRow->addWidget(new QLabel(obs_module_text("Safety.From"), gp));
                     timeRow->addWidget(scheduleFrom_ = new QTimeEdit(gp));
+                    timeRow->addSpacing(8);
                     timeRow->addWidget(new QLabel(obs_module_text("Safety.To"), gp));
                     timeRow->addWidget(scheduleTo_ = new QTimeEdit(gp));
                     timeRow->addStretch(1);
                     scheduleFrom_->setDisplayFormat("HH:mm");
                     scheduleTo_->setDisplayFormat("HH:mm");
-                    otherLayout->addLayout(timeRow, row++, 0);
+                    scheduleFrom_->setMinimumWidth(90);
+                    scheduleTo_->setMinimumWidth(90);
+                    indented(timeRow);
 
                     auto dayRow = new QHBoxLayout();
+                    dayRow->setSpacing(10);
                     for (int i = 0; i < 7; ++i) {
                         // QLocale::dayName: 1 = Monday ... 7 = Sunday
                         dayRow->addWidget(scheduleDay_[i] = new QCheckBox(QLocale().dayName(i + 1, QLocale::ShortFormat), gp));
                     }
-                    otherLayout->addLayout(dayRow, row++, 0);
+                    dayRow->addStretch(1);
+                    indented(dayRow);
+                    addHelp("Help.Schedule");
 
-                    auto maxRow = new QHBoxLayout();
-                    maxRow->addWidget(new QLabel(obs_module_text("Safety.MaxDuration"), gp));
-                    maxRow->addWidget(maxDuration_ = new QSpinBox(gp));
+                    // --- Automatic stop ---
+                    addSection("Section.AutoStop", false);
+                    auto timeGrid = new QGridLayout();
+                    timeGrid->setColumnStretch(2, 1);
+                    timeGrid->addWidget(new QLabel(obs_module_text("Safety.MaxDuration"), gp), 0, 0);
+                    timeGrid->addWidget(maxDuration_ = new QSpinBox(gp), 0, 1);
                     maxDuration_->setRange(0, 7 * 24 * 60);
+                    maxDuration_->setSingleStep(15);
                     maxDuration_->setSpecialValueText(obs_module_text("Safety.Off"));
                     maxDuration_->setSuffix(" min");
-                    maxRow->addStretch(1);
-                    otherLayout->addLayout(maxRow, row++, 0);
+                    maxDuration_->setMinimumWidth(130);
 
-                    auto warnRow = new QHBoxLayout();
-                    warnRow->addWidget(new QLabel(obs_module_text("Safety.WarnBefore"), gp));
-                    warnRow->addWidget(warnBefore_ = new QSpinBox(gp));
+                    timeGrid->addWidget(new QLabel(obs_module_text("Safety.WarnBefore"), gp), 1, 0);
+                    timeGrid->addWidget(warnBefore_ = new QSpinBox(gp), 1, 1);
                     // Kept below the 30 min extension, or the warning would pop up again
                     // right after every "extend".
                     warnBefore_->setRange(0, 25);
                     warnBefore_->setSpecialValueText(obs_module_text("Safety.Off"));
                     warnBefore_->setSuffix(" min");
-                    warnRow->addStretch(1);
-                    otherLayout->addLayout(warnRow, row++, 0);
+                    warnBefore_->setMinimumWidth(130);
+                    other->addLayout(timeGrid);
+                    addHelp("Help.AutoStop");
+
+                    other->addStretch(1);
+
+                    // Tooltips repeat the explanations for anyone hovering.
+                    syncStart_->setToolTip(QString::fromUtf8(obs_module_text("Help.Sync")));
+                    syncStop_->setToolTip(QString::fromUtf8(obs_module_text("Help.Sync")));
+                    confirmStart_->setToolTip(QString::fromUtf8(obs_module_text("Help.ConfirmStart")));
+                    scheduleEnabled_->setToolTip(QString::fromUtf8(obs_module_text("Help.Schedule")));
+                    maxDuration_->setToolTip(QString::fromUtf8(obs_module_text("Help.AutoStop")));
+                    warnBefore_->setToolTip(QString::fromUtf8(obs_module_text("Help.AutoStop")));
 
                     QObject::connect(scheduleEnabled_, &QCheckBox::toggled, [this]() { UpdateSafetyUI(); });
-                    gp->setLayout(otherLayout);
+                    gp->setLayout(other);
                 }
             }
             layout->addLayout(sub_grid, 1);
@@ -1201,7 +1270,12 @@ class EditOutputWidgetImpl: public EditOutputWidget
 
         auto maxSize = CalculateMaximumDialogSize();
         setMaximumSize(maxSize);
-        resize(targetSize.boundedTo(maxSize).expandedTo(minimumSizeHint()));
+        // Open at a comfortable, squarer size (scroll for the rest) instead
+        // of stretching to the full content height.
+        QSize comfortable(
+            (std::min)(maxSize.width(), (int)(maxSize.width() * 0.92)),
+            (std::min)((int)(maxSize.height() * 0.85), 820));
+        resize(targetSize.boundedTo(comfortable).expandedTo(QSize(900, 600).boundedTo(maxSize)));
     }
 
     void ScheduleResizeToContent() {

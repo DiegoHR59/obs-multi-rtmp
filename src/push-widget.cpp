@@ -12,6 +12,7 @@
 #include "protocols.h"
 #include "safety-guard.h"
 #include "stream-health.h"
+#include "icons.h"
 
 #include "obs.hpp"
 
@@ -654,7 +655,7 @@ class PushWidgetImpl : public PushWidget, public IOBSOutputEventHanlder
             label = QString::fromUtf8(obs_module_text("Health.Failed"));
         }
 
-        status_dot_->setStyleSheet(QString("color: %1;").arg(color));
+        status_dot_->setStyleSheet(QString("color: %1; font-size: 18px;").arg(color));
         if (!isLive_)
             status_dot_->setToolTip(QString());
         if (health_) {
@@ -843,43 +844,62 @@ public:
             CheckLimits();
         });
 
+        // Row 0: [status square] [target name, bold] ........ [health label]
+        // Row 1: [enabled] [   Start / Stop   ] [pencil] [trash]
+        // Row 2: stats line
         auto layout = new QGridLayout(this);
-        layout->addWidget(status_dot_ = new QLabel(u8"■", this), 0, 0);
-        layout->addWidget(name_ = new QLabel(obs_module_text("NewStreaming"), this), 0, 1, 1, 2);
-        layout->addWidget(health_ = new QLabel(this), 0, 3);
+        layout->setHorizontalSpacing(6);
+        layout->setVerticalSpacing(4);
+        layout->addWidget(status_dot_ = new QLabel(u8"■", this), 0, 0, Qt::AlignCenter);
+        layout->addWidget(name_ = new QLabel(obs_module_text("NewStreaming"), this), 0, 1);
+        {
+            auto f = name_->font();
+            f.setBold(true);
+            f.setPointSizeF(f.pointSizeF() * 1.1);
+            name_->setFont(f);
+            name_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        }
+        layout->addWidget(health_ = new QLabel(this), 0, 2, 1, 2);
         health_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-        layout->addWidget(enabled_cb_ = new QCheckBox(this), 1, 0);
+        layout->addWidget(enabled_cb_ = new QCheckBox(this), 1, 0, Qt::AlignCenter);
         enabled_cb_->setToolTip(obs_module_text("Target.Enabled"));
         QObject::connect(enabled_cb_, &QCheckBox::clicked, [this](bool checked) {
             SetEnabled(checked);
         });
 
         layout->addWidget(btn_ = new QPushButton(obs_module_text("Btn.Start"), this), 1, 1);
+        btn_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        btn_->setMinimumWidth(0);
+        btn_->setMinimumHeight(btn_->fontMetrics().height() + 12);
         QObject::connect(btn_, &QPushButton::clicked, [this]() {
             StartStop();
         });
 
-        layout->addWidget(edit_btn_ = new QPushButton(obs_module_text("Btn.Edit"), this), 1, 2);
+        // Edit and delete as compact icon buttons; the tooltip says what they do.
+        const auto iconColor = palette().color(QPalette::ButtonText);
+        const int iconBtnSize = btn_->minimumHeight();
+
+        layout->addWidget(edit_btn_ = new QPushButton(this), 1, 2);
+        edit_btn_->setIcon(MakeLineIcon(LineIcon::Pencil, iconColor));
+        edit_btn_->setToolTip(QString::fromUtf8(obs_module_text("Tip.Edit")));
         QObject::connect(edit_btn_, &QPushButton::clicked, [this]() {
             ShowEditDlg();
         });
 
-        layout->addWidget(remove_btn_ = new QPushButton(obs_module_text("Btn.Delete"), this), 1, 3);
+        layout->addWidget(remove_btn_ = new QPushButton(this), 1, 3);
+        remove_btn_->setIcon(MakeLineIcon(LineIcon::Trash, iconColor));
+        remove_btn_->setToolTip(QString::fromUtf8(obs_module_text("Tip.Delete")));
 
-        // Keep action buttons usable in narrow docks across OBS themes.
-        for (auto button : { btn_, edit_btn_, remove_btn_ }) {
-            button->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-            button->setMinimumWidth(0);
-            button->setMinimumHeight(button->fontMetrics().height() + 8);
+        for (auto button : { edit_btn_, remove_btn_ }) {
+            button->setFixedSize(iconBtnSize + 6, iconBtnSize);
+            button->setIconSize(QSize(iconBtnSize - 12, iconBtnSize - 12));
         }
         layout->setColumnStretch(1, 1);
-        layout->setColumnStretch(2, 1);
-        layout->setColumnStretch(3, 1);
 
         layout->addWidget(msg_ = new QLabel(u8"", this), 2, 0, 1, 4);
         msg_->setWordWrap(true);
-        layout->addItem(new QSpacerItem(0, 10), 3, 0);
+        layout->addItem(new QSpacerItem(0, 8), 3, 0);
         setLayout(layout);
 
         LoadConfig();
@@ -1277,7 +1297,7 @@ public:
             switch(code)
             {
                 case 0:
-                    SetMsg(autoStopped_ ? obs_module_text("Status.AutoStopped") : u8"");
+                    SetMsg(autoStopped_ ? obs_module_text("Status.AutoStopped") : "");
                     autoStopped_ = false;
                     break;
                 case -1:

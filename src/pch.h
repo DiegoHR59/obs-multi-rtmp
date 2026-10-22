@@ -33,6 +33,7 @@
 #include <QSpinBox>
 #include <QLocale>
 #include <QCoreApplication>
+#include <QFrame>
 
 #include "obs-multi-rtmp.h"
 #include "obs-module.h"
