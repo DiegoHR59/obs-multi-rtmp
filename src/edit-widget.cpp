@@ -598,7 +598,11 @@ public:
 
                 {
                     auto gp = new QGroupBox(obs_module_text("OtherSettings"), this);
-                    sub_grid->addWidget(gp, 0, 1, 2, 1, Qt::AlignTop);
+                    // Spans an extra stretch row and is NOT top-aligned: with
+                    // AlignTop the group got its plain size hint, which ignores
+                    // the word-wrapped help text and squashed the spin boxes.
+                    sub_grid->addWidget(gp, 0, 1, 3, 1);
+                    sub_grid->setRowStretch(2, 1);
                     gp->setMinimumWidth(400);
 
                     auto other = new QVBoxLayout();
@@ -630,6 +634,7 @@ public:
                         help->setFont(f);
                         help->setStyleSheet("color: #a8a8a8;");
                         help->setContentsMargins(22, 0, 0, 4);
+                        help->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
                         other->addWidget(help);
                     };
                     auto indented = [&](QLayout* row) {
